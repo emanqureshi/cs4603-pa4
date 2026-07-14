@@ -427,53 +427,100 @@ cp .env.example .env   # then fill in your values
    path regardless of whether the backend ever adds real token streaming
    later.
 
-### Bonus A (if attempted)
-TODO
+### Bonus A — GitHub Actions CI/CD
 
-### Bonus B — `agents.deploy()` (attempted, not completed)
+`.github/workflows/deploy.yml`: `lint-and-test` runs `ruff check agent/ client/` and
+`pytest -q` (the offline `tests/test_smoke.py` + `tests/test_client.py`, no Databricks, no
+network); `deploy` needs `lint-and-test` and only runs on `push` to `main`
+(`if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'`), reading
+`DATABRICKS_HOST`/`DATABRICKS_TOKEN` from GitHub Secrets and running
+`deployment/deploy.py`. Both jobs pin Python 3.11 via `uv python install 3.11` +
+`uv sync --python 3.11` — directly reusing the Task 2.3 finding that Databricks Serving's
+build environment doesn't reliably support anything newer, so a CI runner defaulting to a
+different Python version wouldn't silently reproduce the same stuck-build failure Task 2.3
+spent most of this session diagnosing.
 
-`deployment/deploy_agents.py` reuses `log_and_register()` from Part 2 unchanged and adds a
-single `agents.deploy(model_name=..., model_version=..., scale_to_zero=True)` call, per the
-spec. Real findings from actually running it:
+1. `main` is the single reviewed, protected source of truth; feature branches are
+   experimental and may be broken. Deploying from a feature branch would push
+   half-finished or untested work to the one live endpoint, and concurrent branches would
+   race to overwrite each other's deployments. Merging to `main` is the deliberate "this is
+   ready" signal — `pull_request` still runs lint+test (so reviewers see green/red before
+   merging) but explicitly does not deploy.
+2. Add an evaluation gate between test and deploy: run the newly logged model against a
+   fixed held-out set of the same three query types used throughout this assignment
+   (retrieval-only, calculation-only, combined), score each against expected facts/citations
+   (e.g. via `mlflow.evaluate` or a simple exact/fuzzy-match check against known-good
+   answers), and compare the score to the currently-serving version's logged metric. If the
+   new version scores lower — or fails outright, the same way the real deployment in this
+   session did across ten iterations — fail the job so `deploy.py`'s endpoint-update step
+   never runs, and the previous working version keeps serving traffic.
 
-1. **Environment blocker (worked around):** `databricks-agents` depends transitively on
-   `whenever` (a Rust-backed package via PyO3) with no prebuilt wheel for Python 3.14 and no
-   source build support against Python 3.14's C API (277 compile errors — a genuine upstream
-   incompatibility, not a local misconfiguration). Installed a separate Python 3.13 venv
-   (`.venv-agents`) just to get `databricks-agents` importable.
-2. **A second real bug this surfaced:** `agent/graph.py` hardcoded `"command": "python"` for
-   the MCP subprocess. Under a plain `uv run` invocation this resolved fine (uv's managed venv
-   puts a `python` symlink on `PATH`), but running directly via `.venv-agents/bin/python`
-   outside `uv run`, the bare `python` command resolved through `pyenv` shims to nothing
-   (`pyenv: python: command not found`) since only `python3` was shimmed. Fixed by using
-   `sys.executable` instead of the literal string `"python"` — the exact interpreter already
-   running, independent of `PATH`/`pyenv`/venv-activation quirks in whatever shell spawned the
-   process. This fix is real and stayed in `agent/graph.py` regardless of Bonus B's outcome.
-3. **The actual blocker — schema incompatibility:** `agents.deploy()`'s Agent Framework
-   validates the model's *output* schema and requires `ChatCompletionResponse` or
-   `StringResponse`. Our graph returns the full `AnalystState` dict (`messages`, `plan`,
-   `current_step_index`, `step_results`, `next_agent`, `final_answer`) — exactly what Part 2's
-   manual serving path is designed to tolerate (it just reads `messages[-1]`), but Bonus B's
-   stricter framework rejects it outright:
-   `ValueError: The model's schema is not compatible with Agent Framework. The output schema
-   must be either ChatCompletionResponse or StringResponse.`
+### Bonus B — `agents.deploy()` (three real bugs fixed, blocked by a platform limit on the last step)
 
-**Not completed** because fixing this for real needs a genuinely separate wrapper (an
-`mlflow.pyfunc` or similar adapter that calls `build_graph().invoke(...)` internally and
-reshapes the output to just the final string/chat-completion) rather than reusing
-`deployment/agent_model.py` as-is — distinct new code, not a config tweak, and out of scope
-given the amount of the session already spent on Part 2's manual-path debugging.
+`deployment/deploy_agents.py` reuses Part 2's exact logging pipeline
+(`deploy.py::log_and_register()`, now parametrized so both paths share it without duplication)
+but points it at a new file, `deployment/agent_model_chat.py`, and adds a single
+`agents.deploy(model_name=..., model_version=..., scale_to_zero=True)` call. Four real,
+distinct issues surfaced by actually running this, in order:
 
-1. `agents.deploy()` gains: automatic auth (no secret scope to wire), a Review App
-   provisioned for free, and a single call instead of three (log → register → create
-   endpoint). It loses: the ability to serve a model whose output is anything other than a
-   chat-completion-shaped shape without a wrapper, and the granular control we exercised
-   throughout Part 2 (inspecting `EndpointState`/`ServedModelState` directly, retrying with
-   the CLI as an independent verification path, iterating on `pip_requirements`/`conda_env`)
-   — control that was directly responsible for diagnosing all three root causes documented
-   above. For a model whose output is naturally chat-shaped, `agents.deploy()` is strictly
-   less work for the same result; for a model with a richer internal state (like ours),
-   it demands an output-shape compromise the manual path doesn't.
+1. **Environment blocker (fixed):** `databricks-agents` depends transitively on `whenever` (a
+   Rust-backed package via PyO3) with no prebuilt wheel for Python 3.14 and no source-build
+   support against Python 3.14's C API (277 compile errors — a genuine upstream
+   incompatibility, not a local misconfiguration). Fixed properly, not worked around: installed
+   a separate Python 3.11 venv (`.venv-py311`) — the same interpreter version Task 2.3's
+   debugging had already established as the one Databricks Serving actually supports — and
+   `databricks-agents` installed cleanly there with a prebuilt wheel, no Rust needed.
+2. **Hardcoded subprocess command (fixed, benefits Part 2 too):** `agent/graph.py` hardcoded
+   `"command": "python"` for the MCP subprocess. Under `uv run` this resolved fine (uv's
+   managed venv puts a `python` symlink on `PATH`), but running directly via
+   `.venv-py311/bin/python` outside `uv run`, the bare `python` command resolved through
+   `pyenv` shims to nothing (`pyenv: python: command not found`) since only `python3` was
+   shimmed. Fixed by using `sys.executable` — the exact interpreter already running,
+   independent of `PATH`/`pyenv`/venv-activation quirks in whatever shell spawned the process.
+   This is a real robustness fix that stayed in `agent/graph.py` regardless of Bonus B's
+   outcome — anything that manually invokes `build_graph()` outside `uv run` benefits.
+3. **Output-schema incompatibility (fixed):** Agent Framework validates the served model's
+   *output* schema and requires `ChatCompletionResponse` or `StringResponse`. Our graph
+   returns the full `AnalystState` dict — exactly what Part 2's manual serving path is
+   designed to tolerate (it just reads `messages[-1]`), but Bonus B's stricter framework
+   rejected it outright with `ValueError: The model's schema is not compatible with Agent
+   Framework...`. Fixed with `deployment/agent_model_chat.py`: a thin `RunnableLambda` wrapper
+   that reuses the exact same `build_graph()` (inheriting every Task 2.3 fix — lazy MCP
+   loading, the `errlog` patch, `sys.executable`) but returns only
+   `result["messages"][-1].content` as a plain string. One follow-up bug this exposed: MLflow's
+   chat-model input adaptation calls the wrapped runnable with a *bare list of messages*, not
+   the `{"messages": [...]}` dict shape the rest of the codebase uses — `_invoke()` now accepts
+   both shapes defensively. Verified locally (both call shapes) before spending a deploy cycle
+   on it, same discipline as Task 2.3.
+4. **Genuine platform wall (not fixable in code):** with all three bugs above fixed, logging
+   and registration succeeded and the schema check passed — `agents.deploy()` proceeded all
+   the way to the real `w.serving_endpoints.create(...)` call and failed with
+   `NotFound: Inference table is not currently supported for this endpoint type in this
+   workspace.` Traced this into the SDK's own source
+   (`databricks.agents.deployments._create_ai_gateway_config`): it unconditionally constructs
+   `AiGatewayInferenceTableConfig(enabled=True, ...)` with **no parameter on the public
+   `agents.deploy()` API to disable it** — confirmed by inspecting the full call signature and
+   the `_create_new_endpoint_config`/`_create_ai_gateway_config` source directly, not just
+   assumed from the error text. This is categorically different from the three issues above:
+   those were real bugs with real code fixes; this is a hard requirement the SDK itself bakes
+   in, unsupported by this Free Edition workspace, with no escape hatch in the library.
+
+**Comparison and feedback-loop answers**, informed by having pushed this all the way to the
+real platform limit rather than stopping at the first error:
+
+1. `agents.deploy()` gains: automatic auth (no secret scope to wire), a Review App provisioned
+   for free, and one call instead of three. It loses: the ability to serve a model whose
+   output is anything richer than a chat-completion shape without a wrapper (point 3 above),
+   and — on a workspace like this one — it can lose the ability to deploy *at all*, since it
+   mandates Inference Tables with no opt-out (point 4), whereas Part 2's manual path never
+   requested that feature and deployed successfully. The granular control the manual path
+   forces on you (inspecting `EndpointState`/`ServedModelState` directly, retrying via the CLI
+   as an independent verification path, iterating on `pip_requirements`/`conda_env`) was
+   directly responsible for diagnosing all three of Task 2.3's root causes *and* the first
+   three issues here — control `agents.deploy()`'s single opaque call doesn't offer. For a
+   model with a naturally chat-shaped output on a workspace with Inference Tables enabled,
+   `agents.deploy()` is strictly less work for the same result; on a constrained workspace, the
+   manual path is sometimes the only one that actually deploys.
 2. Feedback loop: Review App ratings/comments would flow into the MLflow experiment as
    evaluation data; a concrete next step would be periodically pulling low-rated traces,
    diagnosing whether the failure was a misroute (Task 1.3), a bad retrieval (Task 1.4), or a

@@ -42,7 +42,18 @@ _CONDA_ENV = {
 }
 
 
-def log_and_register() -> tuple[str, str]:
+def log_and_register(
+    model_name: str = MODEL_NAME,
+    lc_model_filename: str = "agent_model.py",
+    run_name: str = "document-analyst-deploy",
+) -> tuple[str, str]:
+    """Log + register the model. Defaults reproduce Task 2.2 exactly;
+    `model_name`/`lc_model_filename` are overridable so Bonus B
+    (deploy_agents.py) can reuse this same logging pipeline (code_paths,
+    pip pins, Python 3.11 conda_env) to log its Agent-Framework-compatible
+    wrapper (`agent_model_chat.py`) under a separate UC model name, without
+    duplicating any of it or touching Part 2's own behavior.
+    """
     settings = get_settings()
 
     mlflow.set_tracking_uri("databricks")
@@ -51,13 +62,13 @@ def log_and_register() -> tuple[str, str]:
     from databricks.sdk import WorkspaceClient
 
     user_name = WorkspaceClient(host=settings["host"], token=settings["token"]).current_user.me().user_name
-    mlflow.set_experiment(f"/Users/{user_name}/{MODEL_NAME}")
+    mlflow.set_experiment(f"/Users/{user_name}/{model_name}")
 
-    uc_name = f"{settings['uc_catalog']}.{settings['uc_schema']}.{MODEL_NAME}"
+    uc_name = f"{settings['uc_catalog']}.{settings['uc_schema']}.{model_name}"
 
-    with mlflow.start_run(run_name="document-analyst-deploy"):
+    with mlflow.start_run(run_name=run_name):
         model_info = mlflow.langchain.log_model(
-            lc_model=os.path.join(_REPO_ROOT, "deployment", "agent_model.py"),
+            lc_model=os.path.join(_REPO_ROOT, "deployment", lc_model_filename),
             name="agent",
             code_paths=[
                 os.path.join(_REPO_ROOT, "agent"),
