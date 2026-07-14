@@ -504,6 +504,26 @@ distinct issues surfaced by actually running this, in order:
    assumed from the error text. This is categorically different from the three issues above:
    those were real bugs with real code fixes; this is a hard requirement the SDK itself bakes
    in, unsupported by this Free Edition workspace, with no escape hatch in the library.
+5. **Got a genuinely live endpoint anyway, via the proven manual path:** the actual endpoint
+   creation `agents.deploy()` performs underneath is just `w.serving_endpoints.create(...)` —
+   the exact same call Part 2's `create_or_update_endpoint()` already uses successfully,
+   which never requests `ai_gateway`/Inference Tables at all. Parametrized
+   `create_or_update_endpoint()` with an optional `endpoint_name` and deployed
+   `cs4603.default.document_analyst_chat` (the schema-compatible wrapper) to a second,
+   independent endpoint (`emanqureshi-document-analyst-chat`) via that same proven method.
+   It reached `DEPLOYMENT_READY` and answers correctly, with genuinely clean
+   `StringResponse`-shaped output (`["15% of 2.4 billion is 360 million."]` — a plain string
+   in a list, not the full `AnalystState` dict Part 2's endpoint returns).
+
+**Where this leaves Bonus B's three literal requirements:** (1) "Deploy using `agents.deploy()`"
+— the schema-compatible model is live, but via the proven manual method, not the literal
+`agents.deploy()` Python call (which cannot succeed on this workspace, full stop); (2) "Open
+the Review App and submit 3 queries with feedback ratings" and (3) "Show the feedback in the
+MLflow experiment" — **not achievable on this workspace regardless of method**, since the
+Review App is exclusively provisioned by `agents.deploy()` itself and tied to the same
+Inference Tables infrastructure that's blocked. So: a real, live, correctly-functioning
+schema-compatible agent endpoint exists, but the Review-App-based feedback loop specifically
+does not and cannot on this Free Edition workspace.
 
 **Comparison and feedback-loop answers**, informed by having pushed this all the way to the
 real platform limit rather than stopping at the first error:

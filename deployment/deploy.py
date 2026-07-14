@@ -86,13 +86,18 @@ def log_and_register(
     return uc_name, registered.version
 
 
-def create_or_update_endpoint(uc_name: str, version: str) -> str:
+def create_or_update_endpoint(uc_name: str, version: str, endpoint_name: str | None = None) -> str:
+    """Create/update the Model Serving endpoint. `endpoint_name` defaults to
+    Task 2.3's exact behavior (settings["serving_endpoint_name"]); overridable
+    so a second, independent endpoint can be deployed for the same or a
+    different model version without touching Part 2's endpoint.
+    """
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.errors import NotFound
     from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntityInput
 
     settings = get_settings()
-    endpoint_name = settings["serving_endpoint_name"]
+    endpoint_name = endpoint_name or settings["serving_endpoint_name"]
     scope = settings["secret_scope"]
 
     w = WorkspaceClient(host=settings["host"], token=settings["token"])
