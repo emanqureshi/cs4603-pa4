@@ -1,0 +1,1 @@
+command: ["python", "deployment/mcp_app/app.py"]

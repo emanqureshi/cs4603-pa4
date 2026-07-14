@@ -40,6 +40,15 @@ def get_settings() -> dict[str, str]:
         "uc_schema": os.environ.get("UC_SCHEMA", "default"),
         "serving_endpoint_name": os.environ.get("SERVING_ENDPOINT_NAME", "document-analyst"),
         "secret_scope": os.environ.get("SECRET_SCOPE", "cs4603-deploy"),
+        # Bonus C — standalone HTTP MCP server. Empty means "not configured",
+        # in which case agent/graph.py falls back to the Task 1.5 stdio
+        # subprocess behavior. Databricks Apps' auth proxy doesn't accept
+        # plain PATs (confirmed empirically — every request gets redirected
+        # to OAuth login regardless of Authorization header); a service
+        # principal's OAuth2 client-credentials token is required instead.
+        "mcp_server_url": os.environ.get("MCP_SERVER_URL", ""),
+        "mcp_sp_client_id": os.environ.get("MCP_SP_CLIENT_ID", ""),
+        "mcp_sp_client_secret": os.environ.get("MCP_SP_CLIENT_SECRET", ""),
     }
 
 

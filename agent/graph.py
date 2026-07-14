@@ -82,12 +82,46 @@ def _patch_mcp_stdio_errlog() -> None:
         target.__defaults__ = (fallback,)
 
 
-async def _load_mcp_tools_async(server_path: str):
-    _patch_mcp_stdio_errlog()
+def _get_databricks_app_token(host: str, sp_client_id: str, sp_client_secret: str) -> str:
+    """Mint a short-lived OAuth access token for calling a Databricks App.
+
+    Databricks Apps' auth proxy doesn't accept plain personal access tokens —
+    confirmed empirically: every request got redirected to the OAuth login
+    page (a 302 to /oidc/oauth2/v2.0/authorize) regardless of the
+    Authorization header sent. A service principal's OAuth2
+    client-credentials grant is the actual supported programmatic path,
+    using the `all-apis` scope.
+    """
+    import httpx
+
+    resp = httpx.post(
+        f"{host}/oidc/v1/token",
+        auth=(sp_client_id, sp_client_secret),
+        data={"grant_type": "client_credentials", "scope": "all-apis"},
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+async def _load_mcp_tools_async(server_path: str | None, server_url: str | None, bearer_token: str | None):
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
-    client = MultiServerMCPClient(
-        {
+    if server_url:
+        # Bonus C — remote HTTP MCP server (deployment/mcp_app/app.py, a
+        # separate Databricks App). Decouples the tool server from the model
+        # container entirely: no subprocess, no stdio, no errlog/fileno
+        # fragility at all — see README.md's Bonus C section for why this is
+        # the production-style alternative to Task 1.5's bundled subprocess.
+        connection = {
+            "analyst": {
+                "url": f"{server_url.rstrip('/')}/mcp",
+                "transport": "streamable_http",
+                "headers": {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {},
+            }
+        }
+    else:
+        _patch_mcp_stdio_errlog()
+        connection = {
             "analyst": {
                 # sys.executable (not the bare string "python") so the
                 # subprocess uses the exact interpreter already running,
@@ -98,14 +132,32 @@ async def _load_mcp_tools_async(server_path: str):
                 "transport": "stdio",
             }
         }
-    )
+
+    client = MultiServerMCPClient(connection)
     return await client.get_tools()
 
 
 def load_mcp_tools(server_path: str | None = None):
-    """Connect to the GIVEN MCP server over stdio and return its LangChain tools."""
-    server_path = server_path or _default_server_path()
-    return _run_async(_load_mcp_tools_async(server_path))
+    """Connect to the MCP server and return its LangChain tools.
+
+    Uses the remote HTTP server at $MCP_SERVER_URL (Bonus C) when configured
+    — authenticated with a service-principal OAuth token (see
+    `_get_databricks_app_token`), not $DATABRICKS_TOKEN — falling back to
+    spawning the GIVEN stdio server (tools/mcp_server.py, Task 1.5) when it
+    isn't set.
+    """
+    from config import get_settings
+
+    settings = get_settings()
+    server_url = settings["mcp_server_url"]
+    bearer_token = None
+    if server_url:
+        bearer_token = _get_databricks_app_token(
+            settings["host"], settings["mcp_sp_client_id"], settings["mcp_sp_client_secret"]
+        )
+    else:
+        server_path = server_path or _default_server_path()
+    return _run_async(_load_mcp_tools_async(server_path, server_url, bearer_token))
 
 
 def _flatten_tool_result(result) -> str:

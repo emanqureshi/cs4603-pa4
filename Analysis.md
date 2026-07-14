@@ -548,4 +548,70 @@ real platform limit rather than stopping at the first error:
    — closing the loop from "a human didn't like this answer" back to a specific prompt change.
 
 ### Bonus C
-TODO
+
+**What was built.** `deployment/mcp_app/app.py` reuses `tools/mcp_server.py` (the
+GIVEN tool definitions) unmodified, but runs FastMCP with
+`transport="streamable-http"` bound to `0.0.0.0:$DATABRICKS_APP_PORT` instead
+of stdio, and is deployed as its own Databricks App (`cs4603-mcp-tools`),
+independent of the model-serving container. `agent/graph.py::load_mcp_tools`
+picks between two transports based on `config.get_settings()["mcp_server_url"]`:
+if set, it connects over `streamable_http` to the deployed App; otherwise it
+falls back to spawning the Task 1.5 stdio subprocess. No code path was
+duplicated for this — the same `make_mcp_node` graph node lazily calls
+`load_mcp_tools()` either way.
+
+**Auth: PATs don't work against Databricks Apps.** Every request bearing a
+personal access token, valid or not, was redirected (302) to the OAuth login
+page — Databricks Apps' auth proxy simply doesn't accept PATs. The working
+path is a service principal's OAuth2 client-credentials grant: create an SP,
+grant it `CAN_USE` on the app, then mint a short-lived token via
+`POST {host}/oidc/v1/token` with `grant_type=client_credentials&scope=all-apis`
+(implemented in `agent/graph.py::_get_databricks_app_token`). That token is
+sent as `Authorization: Bearer ...` in the MCP client's HTTP headers.
+
+**Deployment quirk #1 — file placement.** Databricks Apps requires `app.yaml`
+and `requirements.txt` at the *exact root* of `--source-code-path`, not nested
+under `deployment/mcp_app/`. The nested copies stay for spec-compliance (the
+assignment's file layout), and root-level copies (kept in sync) are what
+actually gets deployed.
+
+**Deployment quirk #2 — `ModuleNotFoundError: No module named 'tools'`.**
+After a stop/restart cycle, redeploys started failing with a generic "app
+crashed unexpectedly" error not visible via CLI (`databricks apps logs`
+rejects PAT auth: "OAuth Token not supported for current auth type pat") —
+only readable from the workspace's `/logz` UI in a browser. The real
+traceback: `from tools.mcp_server import mcp` failing at import. Root cause:
+Databricks Apps launches the process as `python deployment/mcp_app/app.py`,
+which makes Python set `sys.path[0]` to the *script's own directory*
+(`deployment/mcp_app/`), not the repo root — so `tools/`, a sibling of
+`deployment/`, was never on the import path. This had gone unnoticed locally
+only because `uv sync` installs the project's own packages (including
+`tools`) into the venv as real editable packages, so local `uv run python
+deployment/mcp_app/app.py` resolved the import regardless of `sys.path[0]`.
+Databricks Apps' plain `requirements.txt`-based install does not do that.
+Fixed by inserting the repo root (computed from `__file__`, three
+`dirname()` calls up from `app.py`) into `sys.path` at the top of
+`app.py`, before the `tools` import — mirrors the same "resolve the real
+path robustly rather than assume where you're running from" lesson already
+applied in `agent/graph.py::_default_server_path`.
+
+**Verified live**, after redeploying with the fix:
+- `databricks apps get cs4603-mcp-tools` → `app_status.state: "RUNNING"`,
+  latest deployment `status.state: "SUCCEEDED"`.
+- `agent.graph.load_mcp_tools()` against the deployed App (using the SP OAuth
+  token, not a PAT) returned all 5 tools:
+  `calculate, percentage_change, growth_rate, compare_values, unit_convert`.
+- Invoking `calculate` remotely (`"12.5 * 4 + 3"`) returned the correct
+  result (`53`) over the live HTTP connection — no local subprocess involved.
+- Previously (before the crash/recovery cycle) also verified the negative
+  case: stopping the App made agent queries requiring a tool call fail,
+  confirming the agent genuinely depends on the remote server rather than
+  silently falling back to a bundled copy.
+
+**Outcome vs requirements:** MCP server deployed as an independent Databricks
+App with its own HTTPS URL (done); `databricks apps list`/`get` shows
+`RUNNING` (done); agent correctly answers a calculation query via the remote
+server, and fails when the server is stopped (done — proven, then
+re-verified after the fix above); the bundled model no longer needs a stdio
+subprocess when `MCP_SERVER_URL` is configured (done — same graph code path,
+no duplication).
