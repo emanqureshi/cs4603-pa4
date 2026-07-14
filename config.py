@@ -35,6 +35,11 @@ def get_settings() -> dict[str, str]:
         "embeddings": os.environ.get("EMBEDDINGS_ENDPOINT", "databricks-gte-large-en"),
         "vs_endpoint": os.environ.get("VECTOR_SEARCH_ENDPOINT", ""),
         "vs_index": os.environ.get("VECTOR_SEARCH_INDEX", ""),
+        "source_table": os.environ.get("SOURCE_TABLE", ""),
+        "uc_catalog": os.environ.get("UC_CATALOG", "main"),
+        "uc_schema": os.environ.get("UC_SCHEMA", "default"),
+        "serving_endpoint_name": os.environ.get("SERVING_ENDPOINT_NAME", "document-analyst"),
+        "secret_scope": os.environ.get("SECRET_SCOPE", "cs4603-deploy"),
     }
 
 
