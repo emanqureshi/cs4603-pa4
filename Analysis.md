@@ -440,6 +440,21 @@ build environment doesn't reliably support anything newer, so a CI runner defaul
 different Python version wouldn't silently reproduce the same stuck-build failure Task 2.3
 spent most of this session diagnosing.
 
+**Verified live, not just correct-looking.** The fork initially had GitHub Actions disabled
+(GitHub's default for forks) and 0 recorded workflow runs even after an earlier push, because
+enabling Actions doesn't retroactively trigger a run for a push that already happened — it only
+takes effect for pushes made after enabling it. After enabling Actions and adding the two repo
+secrets, a real push to `main`
+([run 29598811636](https://github.com/emanqureshi/cs4603-pa4/actions/runs/29598811636)) went
+through the full pipeline for real:
+- `lint-and-test`: `ruff check` clean, `pytest -q` → 13/13 passed — **success**
+- `deploy`: ran `deployment/deploy.py` end-to-end (log → register → update endpoint), gated on
+  `lint-and-test` passing first — **success**
+- Confirmed externally, not just by the green checkmark: `databricks serving-endpoints get`
+  showed `config_version` bumped from `5` to `6` and `state.ready: READY` immediately after the
+  run finished — i.e. the CI job genuinely deployed a new model version end-to-end, the same
+  live endpoint used throughout Part 2, not a mocked or partial run.
+
 1. `main` is the single reviewed, protected source of truth; feature branches are
    experimental and may be broken. Deploying from a feature branch would push
    half-finished or untested work to the one live endpoint, and concurrent branches would
