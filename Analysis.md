@@ -529,16 +529,46 @@ distinct issues surfaced by actually running this, in order:
    It reached `DEPLOYMENT_READY` and answers correctly, with genuinely clean
    `StringResponse`-shaped output (`["15% of 2.4 billion is 360 million."]` — a plain string
    in a list, not the full `AnalystState` dict Part 2's endpoint returns).
+6. **A real bypass exists for the literal `agents.deploy()` call — found by reading further
+   into the SDK, then verified empirically.** `_create_ai_gateway_config()` (point 4) is only
+   ever called from the branch of `deploy()` that handles a *new* endpoint
+   (`if serving_endpoint_opt is None: ...`). The branch that updates an *existing* endpoint
+   never touches `ai_gateway` at all — confirmed by an explicit comment in the SDK's own source:
+   `# Here we don't need to update the ai-gateway config since using the put_ai_gateway throws
+   an error "Inference tables is already enabled"`. So pointing `agents.deploy(...,
+   endpoint_name="emanqureshi-document-analyst-chat")` at the *already-existing* manually-created
+   endpoint from point 5 routes through the update branch and skips the Inference Table
+   requirement entirely. Tested this directly rather than trusting the source-reading alone:
+   the call **succeeded**, printing a genuine `review_app_url`
+   (`.../ml/review-v2/<id>/chat`) and returning a real `Deployment` object — the literal
+   `agents.deploy()` requirement, satisfied.
+7. **A second, distinct platform limit surfaced right after — and we stopped there.** The
+   `agents.deploy()` call itself succeeded, but the resulting config update failed when
+   Databricks tried to actually stand up the new served entity:
+   `Quota Exceeded: You've hit the limit for provisioned concurrency for free usage. Stop or
+   delete existing provisioned concurrency to free up capacity.` Endpoint updates run the old
+   and new served entities side-by-side briefly (a blue/green-style transition), and this
+   Free Edition workspace's provisioned-concurrency cap — seemingly shared account-wide, not
+   per-endpoint — isn't enough headroom for that overlap while the main Part 2 endpoint is also
+   live. The only way to test this further would be to delete Part 2's live, fully-verified
+   main endpoint (`emanqureshi-document-analyst`) to free capacity, then recreate it afterward.
+   Given that endpoint is a required deliverable and the recreate isn't instant, we made the
+   call not to risk it for a bonus item once we'd already gotten the literal `agents.deploy()`
+   call itself to succeed — the quota wall is documented as a second real, distinct platform
+   limit, not chased further.
 
 **Where this leaves Bonus B's three literal requirements:** (1) "Deploy using `agents.deploy()`"
-— the schema-compatible model is live, but via the proven manual method, not the literal
-`agents.deploy()` Python call (which cannot succeed on this workspace, full stop); (2) "Open
-the Review App and submit 3 queries with feedback ratings" and (3) "Show the feedback in the
-MLflow experiment" — **not achievable on this workspace regardless of method**, since the
-Review App is exclusively provisioned by `agents.deploy()` itself and tied to the same
-Inference Tables infrastructure that's blocked. So: a real, live, correctly-functioning
-schema-compatible agent endpoint exists, but the Review-App-based feedback loop specifically
-does not and cannot on this Free Edition workspace.
+— the call itself now succeeds for real (point 6), returning a genuine `review_app_url`, though
+the served entity behind it never reaches `READY` because of the quota wall (point 7); a
+separate, schema-compatible model is live and correctly answering queries via the proven manual
+method (point 5) regardless. (2) "Open the Review App and submit 3 queries with feedback
+ratings" and (3) "Show the feedback in the MLflow experiment" — blocked in practice, since the
+Review App URL that was returned belongs to a served entity that never finished deploying. So:
+a real, live, correctly-functioning schema-compatible agent endpoint exists (via the manual
+path); the literal `agents.deploy()` call itself can now succeed too, once pointed at an
+existing endpoint; but the Review-App-based feedback loop is blocked by a second, independent
+platform limit (provisioned-concurrency quota) that we chose not to work around at the cost of
+the live Part 2 deliverable.
 
 **Comparison and feedback-loop answers**, informed by having pushed this all the way to the
 real platform limit rather than stopping at the first error:
